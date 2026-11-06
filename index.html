@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#79c9ed">
+  <title>Blockbound — Tiny Sandbox</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-rounded, "Trebuchet MS", system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 18px; color: #fff; background: radial-gradient(ellipse at 50% 0%, #253e68, #10192d 72%); }
+    .game { width: min(100%, 1050px); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
+    h1 { margin: 0; font-size: clamp(20px, 4vw, 29px); letter-spacing: .02em; }
+    h1 span { color: #9af28b; }
+    .hint { color: #c6d6ef; font-size: 13px; text-align: right; }
+    .frame { position: relative; overflow: hidden; border: 3px solid #293d5d; border-radius: 15px; background: #83d2f3; box-shadow: 0 18px 55px #0008; }
+    canvas { display: block; width: 100%; aspect-ratio: 16 / 9; image-rendering: pixelated; touch-action: none; cursor: crosshair; }
+    .topbar { position: absolute; inset: 12px 12px auto; display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none; }
+    .badge { padding: 7px 10px; border: 1px solid #ffffff3b; border-radius: 9px; color: #fff; background: #10233bbd; font-size: 12px; text-shadow: 0 1px 2px #000; }
+    .hotbar { display: flex; justify-content: center; gap: 7px; padding: 12px; }
+    .slot { position: relative; display: grid; place-items: center; width: 58px; height: 58px; border: 2px solid #8494ad; border-radius: 10px; background: #1b2944; color: white; font: inherit; cursor: pointer; transition: transform .12s, border-color .12s; }
+    .slot:hover { transform: translateY(-2px); }
+    .slot.selected { border-color: #b6ff92; box-shadow: 0 0 0 2px #b6ff9255, 0 0 18px #9af28b66; }
+    .swatch { width: 25px; height: 25px; border: 2px solid #ffffff55; box-shadow: inset -4px -4px #0002; image-rendering: pixelated; }
+    .count { position: absolute; right: 5px; bottom: 2px; font-size: 12px; font-weight: 800; text-shadow: 1px 1px #000; }
+    .label { position: absolute; left: 4px; top: 2px; font-size: 9px; color: #c6d6ef; }
+    .footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: #aebed8; font-size: 12px; }
+    .reset { border: 1px solid #526582; border-radius: 7px; padding: 5px 9px; color: #dce8f8; background: #1b2944; font: inherit; cursor: pointer; }
+    .reset:hover { background: #2a3d5d; }
+    @media (max-width: 600px) { body { padding: 10px; } .hint { display: none; } .slot { width: 49px; height: 51px; } .hotbar { gap: 5px; padding: 9px 3px; } .footer { font-size: 11px; } }
+  </style>
+</head>
+<body>
+  <main class="game">
+    <header><h1>BLOCK<span>BOUND</span></h1><div class="hint">A little world to dig, build, and explore 🌱</div></header>
+    <section class="frame" aria-label="Blockbound game">
+      <canvas id="game" aria-label="A side-view block-building game"></canvas>
+      <div class="topbar"><div class="badge" id="status">Find a spot and make it yours!</div><div class="badge">⛏️ Sandbox mode</div></div>
+    </section>
+    <nav class="hotbar" id="hotbar" aria-label="Block inventory"></nav>
+    <div class="footer"><span>Move: A / D or ← / → &nbsp; Jump: Space / W / ↑ &nbsp; Dig: click &nbsp; Build: right-click</span><button class="reset" id="reset">New world</button></div>
+  </main>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const hotbarEl = document.getElementById('hotbar');
+  const TILE = 32, W = 220, H = 42;
+  const blocks = [
+    { name: 'Grass', color: '#58b947', top: '#82dc5b' },
+    { name: 'Dirt', color: '#98613c' },
+    { name: 'Stone', color: '#798391' },
+    { name: 'Wood', color: '#a66b3e' },
+    { name: 'Leaves', color: '#319b58' }
+  ];
+  let world, inventory, selected = 0, cameraX = 0, cameraY = 0, target = null, lastTime = 0;
+  let keys = Object.create(null), clouds = [];
+  const player = { x: 8, y: 0, w: .72, h: 1.72, vx: 0, vy: 0, grounded: false, facing: 1 };
+  const slots = [0, 1, 2, 3, 4];
+
+  function resize() {
+    const r = canvas.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize); resize();
+
+  function makeWorld() {
+    world = Array.from({ length: H }, () => Array(W).fill(-1));
+    let surface = 17;
+    for (let x = 0; x < W; x++) {
+      if (x % 5 === 0) surface += Math.floor(Math.random() * 3) - 1;
+      surface = Math.max(12, Math.min(21, surface));
+      for (let y = surface; y < H; y++) {
+        world[y][x] = y === surface ? 0 : y < surface + 4 ? 1 : 2;
+      }
+      if (x > 12 && x < W - 8 && Math.random() < .075 && world[surface][x] === 0) {
+        const trunk = 3 + Math.floor(Math.random() * 3);
+        for (let i = 1; i <= trunk; i++) world[surface - i][x] = 3;
+        const top = surface - trunk;
+        for (let yy = top - 2; yy <= top + 1; yy++) for (let xx = x - 2; xx <= x + 2; xx++) {
+          if (yy >= 0 && xx >= 0 && xx < W && Math.abs(xx - x) + Math.abs(yy - top) < 4 && world[yy][xx] === -1) world[yy][xx] = 4;
+        }
+      }
+    }
+    inventory = [12, 12, 12, 8, 8]; selected = 0;
+    player.x = 8; player.y = findSurface(8) - player.h; player.vx = player.vy = 0;
+    clouds = Array.from({ length: 10 }, (_, i) => ({ x: i * 260 + Math.random() * 200, y: 35 + Math.random() * 100, s: .7 + Math.random() * .8 }));
+    updateHotbar();
+  }
+  function findSurface(x) { for (let y = 0; y < H; y++) if (world[y][Math.floor(x)] >= 0) return y; return H - 2; }
+
+  function updateHotbar() {
+    hotbarEl.innerHTML = '';
+    slots.forEach((id, i) => {
+      const button = document.createElement('button'); button.className = 'slot' + (i === selected ? ' selected' : '');
+      button.setAttribute('aria-label', `${i + 1}: ${blocks[id].name}, ${inventory[id]} blocks`);
+      button.innerHTML = `<span class="label">${i + 1}</span><span class="swatch" style="background:${blocks[id].color}"></span><span class="count">${inventory[id]}</span>`;
+      button.addEventListener('click', () => { selected = i; updateHotbar(); }); hotbarEl.append(button);
+    });
+  }
+  function tileAt(tx, ty) { return tx < 0 || tx >= W || ty < 0 || ty >= H ? 2 : world[ty][tx]; }
+  function collides(x, y, w, h) {
+    const left = Math.floor(x + .03), right = Math.floor(x + w - .03), top = Math.floor(y + .03), bottom = Math.floor(y + h - .03);
+    for (let ty = top; ty <= bottom; ty++) for (let tx = left; tx <= right; tx++) if (tileAt(tx, ty) >= 0) return true;
+    return false;
+  }
+  function movePlayer(dt) {
+    const left = keys.ArrowLeft || keys.KeyA, right = keys.ArrowRight || keys.KeyD;
+    player.vx = ((right ? 1 : 0) - (left ? 1 : 0)) * 5.3;
+    if (player.vx) player.facing = Math.sign(player.vx);
+    player.vy = Math.min(player.vy + 22 * dt, 16);
+    let dx = player.vx * dt, dy = player.vy * dt;
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / .22)); dx /= steps; dy /= steps;
+    player.grounded = false;
+    for (let i = 0; i < steps; i++) {
+      if (!collides(player.x + dx, player.y, player.w, player.h)) player.x += dx;
+      else player.vx = 0;
+      if (!collides(player.x, player.y + dy, player.w, player.h)) player.y += dy;
+      else { if (dy > 0) player.grounded = true; player.vy = 0; }
+    }
+    player.x = Math.max(0, Math.min(W - player.w, player.x));
+  }
+  function update(dt) {
+    movePlayer(dt);
+    const rect = canvas.getBoundingClientRect(), viewW = rect.width / TILE, viewH = rect.height / TILE;
+    cameraX += (Math.max(0, Math.min(W - viewW, player.x + player.w / 2 - viewW / 2)) - cameraX) * Math.min(1, dt * 7);
+    cameraY += (Math.max(0, Math.min(H - viewH, player.y + player.h / 2 - viewH / 2)) - cameraY) * Math.min(1, dt * 7);
+    clouds.forEach(c => { c.x = (c.x + dt * 5) % (W * TILE); });
+  }
+  function drawBlock(x, y, id) {
+    const px = x * TILE, py = y * TILE;
+    ctx.fillStyle = blocks[id].color; ctx.fillRect(px, py, TILE, TILE);
+    if (id === 0) { ctx.fillStyle = blocks[0].top; ctx.fillRect(px, py, TILE, 7); }
+    if (id === 3) { ctx.fillStyle = '#d2935a'; ctx.fillRect(px + 7, py, 3, TILE); ctx.fillRect(px + 22, py, 3, TILE); }
+    if (id === 4) { ctx.fillStyle = '#48b96b'; ctx.fillRect(px + 4, py + 4, 8, 7); ctx.fillRect(px + 19, py + 16, 9, 8); }
+    ctx.fillStyle = '#00000012'; ctx.fillRect(px + TILE - 4, py, 4, TILE); ctx.fillRect(px, py + TILE - 4, TILE, 4);
+    ctx.strokeStyle = '#ffffff12'; ctx.strokeRect(px + .5, py + .5, TILE - 1, TILE - 1);
+  }
+  function draw() {
+    const rect = canvas.getBoundingClientRect(), vw = rect.width, vh = rect.height;
+    const sky = ctx.createLinearGradient(0, 0, 0, vh); sky.addColorStop(0, '#67c4ef'); sky.addColorStop(1, '#d6f3fd');
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, vw, vh);
+    // distant hills
+    ctx.save(); ctx.translate(-cameraX * TILE * .18, 0); ctx.fillStyle = '#70b99c';
+    for (let i = -1; i < 10; i++) { ctx.beginPath(); ctx.ellipse(i * 260 + 100, vh * .70, 190, 105, 0, Math.PI, 0); ctx.fill(); }
+    ctx.restore();
+    // clouds
+    ctx.fillStyle = '#ffffffbb';
+    clouds.forEach(c => { const x = c.x - cameraX * TILE * .35; if (x > -100 && x < vw + 100) { ctx.beginPath(); ctx.ellipse(x, c.y, 38*c.s, 12*c.s, 0, 0, Math.PI*2); ctx.ellipse(x-20*c.s, c.y+2, 19*c.s, 10*c.s, 0, 0, Math.PI*2); ctx.ellipse(x+18*c.s, c.y+1, 22*c.s, 11*c.s, 0, 0, Math.PI*2); ctx.fill(); } });
+    ctx.save(); ctx.scale(TILE, TILE); ctx.translate(-cameraX, -cameraY);
+    const x0 = Math.max(0, Math.floor(cameraX) - 1), x1 = Math.min(W, Math.ceil(cameraX + vw / TILE) + 1);
+    const y0 = Math.max(0, Math.floor(cameraY) - 1), y1 = Math.min(H, Math.ceil(cameraY + vh / TILE) + 1);
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (world[y][x] >= 0) drawBlock(x, y, world[y][x]);
+    // player
+    ctx.fillStyle = '#e9564f'; ctx.fillRect(player.x + .08, player.y + .5, player.w - .16, player.h - .5);
+    ctx.fillStyle = '#f6c7a2'; ctx.fillRect(player.x + .09, player.y + .08, player.w - .18, .52);
+    ctx.fillStyle = '#493349'; ctx.fillRect(player.x + .05, player.y + .05, player.w - .1, .17);
+    ctx.fillStyle = '#243249'; ctx.fillRect(player.x + (player.facing > 0 ? .49 : .19), player.y + .28, .09, .09);
+    ctx.fillStyle = '#345b94'; ctx.fillRect(player.x + .1, player.y + player.h - .18, .22, .18); ctx.fillRect(player.x + .4, player.y + player.h - .18, .22, .18);
+    if (target) { ctx.strokeStyle = '#ffffff'; ctx.lineWidth = .09; ctx.strokeRect(target.x + .04, target.y + .04, .92, .92); }
+    ctx.restore();
+  }
+  function frame(t) { const dt = Math.min(.035, (t - lastTime) / 1000 || 0); lastTime = t; update(dt); draw(); requestAnimationFrame(frame); }
+  function getTarget(e) {
+    const r = canvas.getBoundingClientRect();
+    const tx = Math.floor((e.clientX - r.left) / TILE + cameraX), ty = Math.floor((e.clientY - r.top) / TILE + cameraY);
+    const dist = Math.hypot(tx + .5 - (player.x + player.w/2), ty + .5 - (player.y + player.h/2));
+    target = dist < 5 ? { x: tx, y: ty } : null;
+  }
+  canvas.addEventListener('pointermove', getTarget);
+  canvas.addEventListener('pointerleave', () => target = null);
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('pointerdown', e => {
+    getTarget(e); if (!target) { statusEl.textContent = 'Get a little closer to that block!'; return; }
+    const { x, y } = target;
+    if (e.button === 2) {
+      const id = slots[selected];
+      if (inventory[id] <= 0) { statusEl.textContent = `No ${blocks[id].name.toLowerCase()} blocks left.`; return; }
+      if (tileAt(x, y) !== -1) { statusEl.textContent = 'There is already a block there.'; return; }
+      if (x >= 0 && x < W && y >= 0 && y < H && !(player.x < x+1 && player.x+player.w > x && player.y < y+1 && player.y+player.h > y)) {
+        world[y][x] = id; inventory[id]--; updateHotbar(); statusEl.textContent = `Placed ${blocks[id].name.toLowerCase()}!`;
+      }
+    } else if (e.button === 0) {
+      const id = tileAt(x, y);
+      if (id >= 0 && x >= 0 && x < W && y >= 0 && y < H) {
+        world[y][x] = -1; inventory[id] = Math.min(99, inventory[id] + 1); updateHotbar(); statusEl.textContent = `You found ${blocks[id].name.toLowerCase()}.`;
+      }
+    }
+  });
+  window.addEventListener('keydown', e => {
+    if (['ArrowLeft','ArrowRight','ArrowUp','Space'].includes(e.code)) e.preventDefault();
+    keys[e.code] = true;
+    if ((e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') && player.grounded) { player.vy = -9.2; player.grounded = false; }
+    if (/^Digit[1-5]$/.test(e.code)) { selected = Number(e.code.slice(-1)) - 1; updateHotbar(); }
+  });
+  window.addEventListener('keyup', e => keys[e.code] = false);
+  window.addEventListener('blur', () => keys = Object.create(null));
+  document.getElementById('reset').addEventListener('click', () => { makeWorld(); statusEl.textContent = 'A fresh world is waiting for you!'; });
+  makeWorld(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
